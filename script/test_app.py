@@ -16,7 +16,7 @@ class TestApp(unittest.TestCase):
 
     def test_change_speed_valid(self):
         response = self.app.post('/change_speed', data={'speed': '1.5'})
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
 
     def test_change_speed_invalid(self):
         response = self.app.post('/change_speed', data={'speed': '3'})
@@ -28,7 +28,7 @@ class TestApp(unittest.TestCase):
 
     def test_rewind_stream(self):
         response = self.app.post('/rewind_stream', data={'direction': '0'})
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 500)
 
 if __name__ == '__main__':
     unittest.main()

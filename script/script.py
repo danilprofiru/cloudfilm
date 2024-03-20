@@ -19,7 +19,7 @@ def create_stream():
     encoded_file_name = quote(file_name, safe='')
     encoded_file_name = encoded_file_name.replace('+', '%20')
 
-    ffmpeg_cmd = f"ffmpeg -re -i {file_name} -c:v copy -c:a aac -f flv rtmp://192.168.1.13/myapp/{encoded_file_name}"
+    ffmpeg_cmd = f"ffmpeg -re -i {file_name} -c:v copy -c:a aac -f flv rtmp://localhost/myapp/{encoded_file_name}"
 
     try:
         ffmpeg_process = subprocess.Popen(ffmpeg_cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -57,8 +57,12 @@ def pause_resume_stream():
     global ffmpeg_process
 
     if ffmpeg_process:
-        ffmpeg_process.stdin.write('pause\n'.encode())
-        return "Stream paused/resumed successfully", 200
+        try:
+            ffmpeg_process.stdin.write('pause\n'.encode())
+            return "Stream paused/resumed successfully", 200
+        except Exception as e:
+            print(f"An error occurred: {e}")  # Выводим сообщение об ошибке для отладки
+            return "An error occurred", 400  # Возвращаем код 400 в случае ошибки
     else:
         return "No stream is currently running", 400
 
@@ -66,21 +70,27 @@ def pause_resume_stream():
 def rewind_stream():
     global ffmpeg_process
 
-    direction = request.form.get('direction')
+    if ffmpeg_process and hasattr(ffmpeg_process, 'stdin'):
+        direction = request.form.get('direction')
 
-    if direction not in ['0', '1']:
-        return "Invalid direction value. Allowed values are '0' (backward) and '1' (forward)", 400
+        if direction not in ['0', '1']:
+            return "Invalid direction value. Allowed values are '0' (backward) and '1' (forward)", 400
 
-    if ffmpeg_process:
-        if direction == '0':
-            ffmpeg_process.stdin.write('seek -10\n'.encode())
-            return "Stream rewound 10 seconds successfully", 200
-        elif direction == '1':
-            ffmpeg_process.stdin.write('seek 10\n'.encode())
-            return "Stream forwarded 10 seconds successfully", 200
+        try:
+            if direction == '0':
+                ffmpeg_process.stdin.write('seek -10\n'.encode())
+                return "Stream rewound 10 seconds successfully", 200
+            elif direction == '1':
+                ffmpeg_process.stdin.write('seek 10\n'.encode())
+                return "Stream forwarded 10 seconds successfully", 200
+        except Exception as e:
+            print(f"An error occurred: {e}")  # Выводим сообщение об ошибке для отладки
+            return "An error occurred", 500  # Возвращаем код 500 в случае ошибки
     else:
-        return "No stream is currently running", 400
+        return "No stream is currently running", 404  # Возвращаем код 404, если поток не запущен
+
+
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='192.168.1.13', port=8080)
+    app.run(debug=True, host='localhost', port=8080)
