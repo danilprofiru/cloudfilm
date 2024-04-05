@@ -1,4 +1,6 @@
 Flask==2.2.2
+psycopg2-binary==2.9.1
+sqlalchemy==1.4.31
 Werkzeug==2.2.2
 requests==2.26.0
 pytest==6.2.5

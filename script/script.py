@@ -1,7 +1,91 @@
 from flask import Flask, request, Response
-import subprocess
 from urllib.parse import quote
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.exc import IntegrityError
+import subprocess
+import psycopg2
+import hashlib
+import random
 
+
+Base = declarative_base()
+
+# Определение таблиц User и Auth
+class User(Base):
+    __tablename__ = 'User'
+    UserID = Column(Integer, primary_key=True)
+    Name = Column(String(100))
+    email = Column(String, unique=True, nullable=False)
+    auth = relationship("Auth", back_populates="user")
+
+class Auth(Base):
+    __tablename__ = 'Auth'
+    AuthId = Column(Integer, ForeignKey('User.UserID'), primary_key=True)
+    email = Column(String, nullable=False)
+    password = Column(String, nullable=False)
+    user = relationship("User", back_populates="auth")
+
+# Подключение к БД
+def connect_to_database():
+    dbname = 'cloudfilm_database'
+    user = 'sadmin'
+    password = 'adminrbt2300'
+    host = '192.168.1.14'
+    port = '5432'
+    conn_string = f"dbname='{dbname}' user='{user}' password='{password}' host='{host}' port='{port}'"
+    try:
+        conn = psycopg2.connect(conn_string)
+        return conn
+    except psycopg2.Error as e:
+        print("Error connecting to PostgreSQL:", e)
+        return None
+
+Session = sessionmaker(bind=connect_to_database())
+
+# Функция генерации уникального UserID
+def generate_unique_userid(session):
+    while True:
+        random_userid = random.randint(100000, 999999)
+        existing_user = session.query(User).filter_by(UserID=random_userid).first()
+        if not existing_user:
+            return random_userid
+
+# Функция регистрации нового пользователя
+def register_user(name, email, password):
+    session = Session()
+    try:
+        userid = generate_unique_userid(session)
+        hashed_password = hashlib.sha256(password.encode()).hexdigest()
+        new_user = User(UserID=userid, Name=name, email=email)
+        session.add(new_user)
+        new_auth = Auth(AuthId=userid, email=email, password=hashed_password)
+        session.add(new_auth)
+        session.commit()
+        return {'message': 'User registered successfully', 'UserID': userid}, 201
+    except IntegrityError:
+        session.rollback()
+        return {'error': 'Integrity error occurred'}, 500
+    finally:
+        session.close()
+
+# Функция авторизации нового пользователя
+def authenticate_user(email, password):
+    session = Session()
+    try:
+        user_auth = session.query(Auth).filter_by(email=email).first()
+        if user_auth:
+            hashed_password = hashlib.sha256(password.encode()).hexdigest()
+            if user_auth.password == hashed_password:
+                user = session.query(User).filter_by(UserID=user_auth.AuthId).first()
+                return {'UserID': user.UserID, 'Name': user.Name, 'email': user.email}, 200
+            else:
+                return {'error': 'Invalid email or password'}, 401
+        else:
+            return {'error': 'Invalid email or password'}, 401
+    finally:
+        session.close()
 
 app = Flask(__name__)
 ffmpeg_process = None  # объявляем переменную ffmpeg_process
@@ -89,8 +173,31 @@ def rewind_stream():
     else:
         return "No stream is currently running", 404  # Возвращаем код 404, если поток не запущен
 
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+    name = data.get('name')
+    email = data.get('email')
+    password = data.get('password')
+
+    if not name or not email or not password:
+        return jsonify({'error': 'Name, email, and password are required'}), 400
+
+    result, status_code = register_user(name, email, password)
+    return jsonify(result), status_code
 
 
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+
+    if not email or not password:
+        return jsonify({'error': 'Email and password are required'}), 400
+
+    result, status_code = authenticate_user(email, password)
+    return jsonify(result), status_code
 
 if __name__ == '__main__':
-    app.run(debug=True, host='localhost', port=8080)
+    app.run(debug=True, host='localhost', port=8082)
