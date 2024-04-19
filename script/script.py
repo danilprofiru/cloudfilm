@@ -1,94 +1,45 @@
-from flask import Flask, request, Response
-from urllib.parse import quote
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey
-from sqlalchemy.orm import sessionmaker, relationship
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.exc import IntegrityError
+from flask import Flask, request, Response, jsonify
+from argon2 import PasswordHasher
 import subprocess
-import psycopg2
-import hashlib
-import random
+import uuid
+from urllib.parse import quote
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from models import User, Auth
 
+app = Flask(__name__)
 
-Base = declarative_base()
+# Создайом экземпляр PasswordHasher
+ph = PasswordHasher()
 
-# Определение таблиц User и Auth
-class User(Base):
-    __tablename__ = 'User'
-    UserID = Column(Integer, primary_key=True)
-    Name = Column(String(100))
-    email = Column(String, unique=True, nullable=False)
-    auth = relationship("Auth", back_populates="user")
-
-class Auth(Base):
-    __tablename__ = 'Auth'
-    AuthId = Column(Integer, ForeignKey('User.UserID'), primary_key=True)
-    email = Column(String, nullable=False)
-    password = Column(String, nullable=False)
-    user = relationship("User", back_populates="auth")
-
-# Подключение к БД
+# Подключение к базе данных
 def connect_to_database():
     dbname = 'cloudfilm_database'
     user = 'sadmin'
     password = 'adminrbt2300'
     host = '192.168.1.14'
     port = '5432'
-    conn_string = f"dbname='{dbname}' user='{user}' password='{password}' host='{host}' port='{port}'"
+    conn_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+    
     try:
-        conn = psycopg2.connect(conn_string)
-        return conn
-    except psycopg2.Error as e:
-        print("Error connecting to PostgreSQL:", e)
+        engine = create_engine(conn_string)
+        print("Successfully connected to PostgreSQL.")
+        return engine
+    except Exception as e:
+        print(f"Error connecting to PostgreSQL: {e}")
         return None
 
-Session = sessionmaker(bind=connect_to_database())
+# Создание фабрики сессий
+engine = connect_to_database()
+Session = sessionmaker(bind=engine)
 
-# Функция генерации уникального UserID
-def generate_unique_userid(session):
-    while True:
-        random_userid = random.randint(100000, 999999)
-        existing_user = session.query(User).filter_by(UserID=random_userid).first()
-        if not existing_user:
-            return random_userid
+# объявляем переменную ffmpeg_process
+ffmpeg_process = None
 
-# Функция регистрации нового пользователя
-def register_user(name, email, password):
-    session = Session()
-    try:
-        userid = generate_unique_userid(session)
-        hashed_password = hashlib.sha256(password.encode()).hexdigest()
-        new_user = User(UserID=userid, Name=name, email=email)
-        session.add(new_user)
-        new_auth = Auth(AuthId=userid, email=email, password=hashed_password)
-        session.add(new_auth)
-        session.commit()
-        return {'message': 'User registered successfully', 'UserID': userid}, 201
-    except IntegrityError:
-        session.rollback()
-        return {'error': 'Integrity error occurred'}, 500
-    finally:
-        session.close()
-
-# Функция авторизации нового пользователя
-def authenticate_user(email, password):
-    session = Session()
-    try:
-        user_auth = session.query(Auth).filter_by(email=email).first()
-        if user_auth:
-            hashed_password = hashlib.sha256(password.encode()).hexdigest()
-            if user_auth.password == hashed_password:
-                user = session.query(User).filter_by(UserID=user_auth.AuthId).first()
-                return {'UserID': user.UserID, 'Name': user.Name, 'email': user.email}, 200
-            else:
-                return {'error': 'Invalid email or password'}, 401
-        else:
-            return {'error': 'Invalid email or password'}, 401
-    finally:
-        session.close()
-
-app = Flask(__name__)
-ffmpeg_process = None  # объявляем переменную ffmpeg_process
+# Маршрут для проверки подключения к приложению через браузер
+@app.route('/')
+def home():
+    return "Welcome to the Flask Application! The connection is successful."
 
 @app.route('/create_stream', methods=['POST'])
 def create_stream():
@@ -175,29 +126,61 @@ def rewind_stream():
 
 @app.route('/register', methods=['POST'])
 def register():
-    data = request.json
+    data = request.get_json()
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
-
+    
     if not name or not email or not password:
         return jsonify({'error': 'Name, email, and password are required'}), 400
+    
+    with Session() as session:
+        # Проверка существования пользователя с таким email
+        existing_user = session.query(User).filter(User.email == email).first()
+        if existing_user:
+            return jsonify({'error': 'Email already in use'}), 400
+        
+        # Хэширование пароля с использованием argon2
+        hashed_password = ph.hash(password)
+        
+        # Создание нового пользователя
+        new_user = User(name=name, email=email)
+        session.add(new_user)
+        session.commit()
 
-    result, status_code = register_user(name, email, password)
-    return jsonify(result), status_code
+        # Создание записи в таблице auth с хэшированным паролем
+        new_auth = Auth(userid=new_user.userid, email=email, password=hashed_password)
+        session.add(new_auth)
+        session.commit()
 
+        return jsonify({'message': 'User registered successfully', 'user_id': new_user.userid}), 201
 
+# Маршрут для аутентификации пользователя
 @app.route('/login', methods=['POST'])
 def login():
-    data = request.json
+    data = request.get_json()
     email = data.get('email')
     password = data.get('password')
-
+    
     if not email or not password:
         return jsonify({'error': 'Email and password are required'}), 400
-
-    result, status_code = authenticate_user(email, password)
-    return jsonify(result), status_code
+    
+    with Session() as session:
+        auth = session.query(Auth).filter(Auth.email == email).first()
+        
+        if auth:
+            try:
+                # Проверка пароля с использованием argon2
+                ph.verify(auth.password, password)
+                return jsonify({'message': 'Login successful'}), 200
+            except argon2.exceptions.VerifyMismatchError:
+                return jsonify({'error': 'Invalid password'}), 401
+            except ValueError as e:
+                # Логгирование ошибки
+                print(f"Error during argon2 password check: {e}")
+                return jsonify({'error': 'An error occurred during password validation'}), 500
+        else:
+            return jsonify({'error': 'User not found'}), 404
 
 if __name__ == '__main__':
     app.run(debug=True, host='localhost', port=8082)

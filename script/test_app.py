@@ -1,6 +1,13 @@
 import unittest
 from flask import Flask
-from script import app
+from hashlib import sha256
+from sqlalchemy.exc import IntegrityError
+from script import app, connect_to_database, Session
+from models import User, Auth
+import logging
+
+# Настраиваем логгирование для отслеживания ошибок
+logging.basicConfig(filename='test_logs.log', level=logging.INFO)
 
 class TestApp(unittest.TestCase):
     def setUp(self):
@@ -29,6 +36,12 @@ class TestApp(unittest.TestCase):
     def test_rewind_stream(self):
         response = self.app.post('/rewind_stream', data={'direction': '0'})
         self.assertEqual(response.status_code, 500)
+
+class TestConnectToDatabase(unittest.TestCase):
+    def test_connect_to_database(self):
+        engine = connect_to_database()
+        with engine.connect() as conn:
+            self.assertIsNotNone(conn)
 
 if __name__ == '__main__':
     unittest.main()
