@@ -1,5 +1,7 @@
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey
+from sqlalchemy import Column, String, Text, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, declarative_base
+import uuid 
 
 # Создаем базовый класс для моделей
 Base = declarative_base()
@@ -8,12 +10,13 @@ Base = declarative_base()
 class User(Base):
     __tablename__ = 'User'  # Имя таблицы в базе данных
 
-    userid = Column(Integer, primary_key=True, autoincrement=True)  # Уникальный идентификатор пользователя
+    userid = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False)
     name = Column(String(100), nullable=False)  # Имя пользователя
-    email = Column(String, unique=True, nullable=False)  # Электронная почта пользователя
+    email = Column(String(255), unique=True, nullable=False)
 
     # Связь с моделью Auth (one-to-one)
-    auth = relationship('Auth', uselist=False, back_populates='user')
+    auth = relationship('Auth', back_populates='user', uselist=False, primaryjoin="User.email == Auth.email")
+
 
     def __repr__(self):
         return f"<User(name={self.name}, email={self.email})>"
@@ -22,13 +25,13 @@ class User(Base):
 class Auth(Base):
     __tablename__ = 'auth'  # Имя таблицы в базе данных
 
-    authid = Column(Integer, primary_key=True)  # Уникальный идентификатор
-    userid = Column(Integer, ForeignKey('User.userid'))  # Внешний ключ на User.userid
-    email = Column(String, nullable=False)  # Электронная почта
-    password = Column(String(200), nullable=False)  # Хэшированный пароль
+    authid = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False)  # Уникальный идентификатор
+    email = Column(String(255), ForeignKey('User.email'), nullable=False)  # Внешний ключ к User.email
+    password = Column(String(255), nullable=False)  # Хэшированный пароль
 
-    # Связь с моделью User (one-to-one)
-    user = relationship('User', back_populates='auth')
+    # Связь с моделью User (один-к-одному)
+    user = relationship('User', back_populates='auth', uselist=False, primaryjoin="User.email == Auth.email")
+
 
     def __repr__(self):
         return f"<Auth(email={self.email})>"

@@ -1,7 +1,8 @@
 from flask import Flask, request, Response, jsonify
 from argon2 import PasswordHasher
 import subprocess
-import uuid
+from uuid import uuid4  # Импортируем функцию для генерации uuid
+import argon2
 from urllib.parse import quote
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -131,29 +132,43 @@ def register():
     email = data.get('email')
     password = data.get('password')
     
+    # Проверка, что все обязательные поля заполнены
     if not name or not email or not password:
         return jsonify({'error': 'Name, email, and password are required'}), 400
     
+    # Создание сессии для работы с базой данных
     with Session() as session:
-        # Проверка существования пользователя с таким email
-        existing_user = session.query(User).filter(User.email == email).first()
-        if existing_user:
-            return jsonify({'error': 'Email already in use'}), 400
+        try:
+            # Проверка существования пользователя с таким email
+            existing_user = session.query(User).filter(User.email == email).first()
+            if existing_user:
+                return jsonify({'error': 'Email already in use'}), 400
+            
+            # Хэширование пароля с использованием argon2
+            hashed_password = ph.hash(password)
+            
+            # Генерация уникального идентификатора для нового пользователя
+            user_id = str(uuid4())
+            
+            # Создание нового пользователя
+            new_user = User(userid=user_id, name=name, email=email)
+            session.add(new_user)
+            session.commit()  # Сохраняем нового пользователя
+            
+            # Создание новой записи в таблице Auth
+            new_auth = Auth(authid=user_id, email=email, password=hashed_password)
+            session.add(new_auth)
+            session.commit()  # Сохраняем новую запись в auth
+            
+            # Если все операции прошли успешно, возвращаем ответ
+            return jsonify({'message': 'User registered successfully', 'user_id': user_id}), 201
         
-        # Хэширование пароля с использованием argon2
-        hashed_password = ph.hash(password)
-        
-        # Создание нового пользователя
-        new_user = User(name=name, email=email)
-        session.add(new_user)
-        session.commit()
+        except Exception as e:
+            # Логирование исключения и возвращение ошибки сервера
+            print(f"Error during registration: {e}")
+            session.rollback()  # Откат сессии в случае ошибки
+            return jsonify({'error': 'Server error during registration'}), 500
 
-        # Создание записи в таблице auth с хэшированным паролем
-        new_auth = Auth(userid=new_user.userid, email=email, password=hashed_password)
-        session.add(new_auth)
-        session.commit()
-
-        return jsonify({'message': 'User registered successfully', 'user_id': new_user.userid}), 201
 
 # Маршрут для аутентификации пользователя
 @app.route('/login', methods=['POST'])
@@ -174,6 +189,7 @@ def login():
                 ph.verify(auth.password, password)
                 return jsonify({'message': 'Login successful'}), 200
             except argon2.exceptions.VerifyMismatchError:
+                # Обработка ошибки неправильного пароля, возвращаем 401
                 return jsonify({'error': 'Invalid password'}), 401
             except ValueError as e:
                 # Логгирование ошибки
