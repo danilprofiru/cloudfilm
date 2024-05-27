@@ -1,6 +1,8 @@
 from flask import Flask, request, Response, jsonify
 from argon2 import PasswordHasher
 import subprocess
+import os
+import datetime
 from uuid import uuid4  # Импортируем функцию для генерации uuid
 import argon2
 from urllib.parse import quote
@@ -16,7 +18,7 @@ ph = PasswordHasher()
 # Подключение к базе данных
 def connect_to_database():
     dbname = 'cloudfilm_database'
-    user = 'sadmin'
+    user = 'sadmin' 
     password = 'adminrbt2300'
     host = '192.168.1.14'
     port = '5432'
@@ -55,7 +57,7 @@ def create_stream():
     encoded_file_name = quote(file_name, safe='')
     encoded_file_name = encoded_file_name.replace('+', '%20')
 
-    ffmpeg_cmd = f"ffmpeg -re -i {file_name} -c:v copy -c:a aac -f flv rtmp://localhost/myapp/{encoded_file_name}"
+    ffmpeg_cmd = f"ffmpeg -re -i {file_name} -c:v copy -c:a aac -f flv rtmp://192.168.1.14/myapp/{encoded_file_name}"
 
     try:
         ffmpeg_process = subprocess.Popen(ffmpeg_cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -131,10 +133,11 @@ def register():
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
+    android_id = data.get('androidID')  # Получение Android ID из запроса
     
     # Проверка, что все обязательные поля заполнены
-    if not name or not email or not password:
-        return jsonify({'error': 'Name, email, and password are required'}), 400
+    if not name or not email or not password or not android_id:
+        return jsonify({'error': 'Name, email, password, and AndroidID are required'}), 400
     
     # Создание сессии для работы с базой данных
     with Session() as session:
@@ -159,6 +162,9 @@ def register():
             new_auth = Auth(authid=user_id, email=email, password=hashed_password)
             session.add(new_auth)
             session.commit()  # Сохраняем новую запись в auth
+
+            # Создание текстового файла для нового пользователя
+            create_authlog_file(user_id, android_id)
             
             # Если все операции прошли успешно, возвращаем ответ
             return jsonify({'message': 'User registered successfully', 'user_id': user_id}), 201
@@ -170,13 +176,33 @@ def register():
             return jsonify({'error': 'Server error during registration'}), 500
 
 
+def create_authlog_file(user_id, android_id):
+    # Определение пути к папке authlog
+    authlog_dir = 'authlog'
+    
+    # Создание папки, если она не существует
+    if not os.path.exists(authlog_dir):
+        os.makedirs(authlog_dir)
+    
+    # Определение пути к файлу
+    file_path = os.path.join(authlog_dir, f"{user_id}.txt")
+    
+    # Запись данных в файл
+    with open(file_path, 'w') as f:
+        current_date = datetime.datetime.now().isoformat()
+        f.write(f"User: {user_id}\n")
+        f.write(f"AndroidID: {android_id}\n")
+        f.write(f"Date: {current_date}\n")
+
+
 # Маршрут для аутентификации пользователя
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
     email = data.get('email')
     password = data.get('password')
-    
+    android_id = data.get('androidID')  # Получение Android ID из запроса
+
     if not email or not password:
         return jsonify({'error': 'Email and password are required'}), 400
     
@@ -187,6 +213,38 @@ def login():
             try:
                 # Проверка пароля с использованием argon2
                 ph.verify(auth.password, password)
+                
+                user_id = auth.authid
+                file_path = os.path.join('authlog', f"{user_id}.txt")
+                
+                if not os.path.exists(file_path):
+                    return jsonify({'error': 'Authlog file not found'}), 500
+                
+                with open(file_path, 'r+') as f:
+                    lines = f.readlines()
+                    f.seek(0)
+                    found = False
+                    current_date = datetime.datetime.now().isoformat()
+                    cutoff_date = datetime.datetime.now() - datetime.timedelta(days=30)
+                    for line in lines:
+                        if line.startswith("AndroidID:") and android_id in line:
+                            found = True
+                            f.write(line)
+                            f.write(f"Date: {current_date}\n")
+                        elif line.startswith("Date:"):
+                            date_str = line.split(' ')[1].strip()
+                            date = datetime.datetime.fromisoformat(date_str)
+                            if date < cutoff_date:
+                                continue
+                            f.write(line)
+                        else:
+                            f.write(line)
+                    
+                    if not found:
+                        f.write(f"AndroidID: {android_id}\n")
+                        f.write(f"Date: {current_date}\n")
+                    f.truncate()
+                
                 return jsonify({'message': 'Login successful'}), 200
             except argon2.exceptions.VerifyMismatchError:
                 # Обработка ошибки неправильного пароля, возвращаем 401
@@ -199,4 +257,4 @@ def login():
             return jsonify({'error': 'User not found'}), 404
 
 if __name__ == '__main__':
-    app.run(debug=True, host='localhost', port=8082)
+    app.run(debug=True, host='192.168.1.14', port=8082)
