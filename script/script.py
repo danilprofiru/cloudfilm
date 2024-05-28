@@ -2,7 +2,7 @@ from flask import Flask, request, Response, jsonify
 from argon2 import PasswordHasher
 import subprocess
 import os
-import datetime
+from datetime import datetime
 from uuid import uuid4  # Импортируем функцию для генерации uuid
 import argon2
 from urllib.parse import quote
@@ -127,17 +127,74 @@ def rewind_stream():
     else:
         return "No stream is currently running", 404  # Возвращаем код 404, если поток не запущен
 
+def create_authlog_file(user_id, android_id):
+    authlog_dir = 'authlog'
+
+    if not os.path.exists(authlog_dir):
+        os.makedirs(authlog_dir)
+
+    file_path = os.path.join(authlog_dir, f"{user_id}.txt")
+
+    with open(file_path, 'w') as f:
+        current_date = datetime.now().isoformat()
+        f.write(f"User: {user_id}\n")
+        f.write(f"AndroidID: {android_id}\n")
+        f.write(f"Date: {current_date}\n")
+
+
+def update_authlog_file(user_id, android_id):
+    file_path = os.path.join('authlog', f"{user_id}.txt")
+
+    if not os.path.exists(file_path):
+        create_authlog_file(user_id, android_id)
+        return
+
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+
+    device_exists = False
+    new_lines = []
+    current_date = datetime.now().isoformat()
+    cutoff_date = datetime.now() - timedelta(days=30)
+
+    for line in lines:
+        if line.startswith('AndroidID: '):
+            existing_android_id = line.split('AndroidID: ')[1].strip()
+            if existing_android_id == android_id:
+                device_exists = True
+                new_lines.append(f"AndroidID: {android_id}\n")
+                new_lines.append(f"Date: {current_date}\n")
+            else:
+                date_line = lines[lines.index(line) + 1]
+                last_login_date = datetime.fromisoformat(date_line.split('Date: ')[1].strip())
+                if last_login_date > cutoff_date:
+                    new_lines.append(line)
+                    new_lines.append(date_line)
+        else:
+            new_lines.append(line)
+
+    if not device_exists:
+        new_lines.append(f"AndroidID: {android_id}\n")
+        new_lines.append(f"Date: {current_date}\n")
+
+    with open(file_path, 'w') as f:
+        f.writelines(new_lines)
+
+
+
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
-    android_id = data.get('androidID')  # Получение Android ID из запроса
+    android_id = data.get('android_id')
     
     # Проверка, что все обязательные поля заполнены
     if not name or not email or not password or not android_id:
-        return jsonify({'error': 'Name, email, password, and AndroidID are required'}), 400
+        return jsonify({'error': 'Name, email, password, and android ID are required'}), 400
+    
+    user_file_path = os.path.join('authlog', f"{email}.txt")
     
     # Создание сессии для работы с базой данных
     with Session() as session:
@@ -162,8 +219,8 @@ def register():
             new_auth = Auth(authid=user_id, email=email, password=hashed_password)
             session.add(new_auth)
             session.commit()  # Сохраняем новую запись в auth
-
-            # Создание текстового файла для нового пользователя
+            
+            # Записываем данные в файл authlog
             create_authlog_file(user_id, android_id)
             
             # Если все операции прошли успешно, возвращаем ответ
@@ -176,35 +233,17 @@ def register():
             return jsonify({'error': 'Server error during registration'}), 500
 
 
-def create_authlog_file(user_id, android_id):
-    # Определение пути к папке authlog
-    authlog_dir = 'authlog'
-    
-    # Создание папки, если она не существует
-    if not os.path.exists(authlog_dir):
-        os.makedirs(authlog_dir)
-    
-    # Определение пути к файлу
-    file_path = os.path.join(authlog_dir, f"{user_id}.txt")
-    
-    # Запись данных в файл
-    with open(file_path, 'w') as f:
-        current_date = datetime.datetime.now().isoformat()
-        f.write(f"User: {user_id}\n")
-        f.write(f"AndroidID: {android_id}\n")
-        f.write(f"Date: {current_date}\n")
-
-
-# Маршрут для аутентификации пользователя
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
     email = data.get('email')
     password = data.get('password')
-    android_id = data.get('androidID')  # Получение Android ID из запроса
+    android_id = data.get('android_id')
+    
+    if not email or not password or not android_id:
+        return jsonify({'error': 'Email, password, and Android ID are required'}), 400
+    
 
-    if not email or not password:
-        return jsonify({'error': 'Email and password are required'}), 400
     
     with Session() as session:
         auth = session.query(Auth).filter(Auth.email == email).first()
@@ -214,47 +253,68 @@ def login():
                 # Проверка пароля с использованием argon2
                 ph.verify(auth.password, password)
                 
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                device_found = False
+                lines = []
+                
                 user_id = auth.authid
-                file_path = os.path.join('authlog', f"{user_id}.txt")
-                
-                if not os.path.exists(file_path):
-                    return jsonify({'error': 'Authlog file not found'}), 500
-                
-                with open(file_path, 'r+') as f:
-                    lines = f.readlines()
-                    f.seek(0)
-                    found = False
-                    current_date = datetime.datetime.now().isoformat()
-                    cutoff_date = datetime.datetime.now() - datetime.timedelta(days=30)
-                    for line in lines:
-                        if line.startswith("AndroidID:") and android_id in line:
-                            found = True
-                            f.write(line)
-                            f.write(f"Date: {current_date}\n")
-                        elif line.startswith("Date:"):
-                            date_str = line.split(' ')[1].strip()
-                            date = datetime.datetime.fromisoformat(date_str)
-                            if date < cutoff_date:
-                                continue
-                            f.write(line)
-                        else:
-                            f.write(line)
-                    
-                    if not found:
-                        f.write(f"AndroidID: {android_id}\n")
-                        f.write(f"Date: {current_date}\n")
-                    f.truncate()
+                update_authlog_file(user_id, android_id)
                 
                 return jsonify({'message': 'Login successful'}), 200
             except argon2.exceptions.VerifyMismatchError:
                 # Обработка ошибки неправильного пароля, возвращаем 401
                 return jsonify({'error': 'Invalid password'}), 401
             except ValueError as e:
-                # Логгирование ошибки
+                # Логирование ошибки
                 print(f"Error during argon2 password check: {e}")
                 return jsonify({'error': 'An error occurred during password validation'}), 500
         else:
             return jsonify({'error': 'User not found'}), 404
+
+
+
+@app.route('/check_device', methods=['POST'])
+def check_device():
+    data = request.get_json()
+    email = data.get('email')
+    android_id = data.get('android_id')
+
+    if not email or not android_id:
+        return jsonify({'error': 'Email and android_id are required'}), 400
+
+    with Session() as session:
+        auth = session.query(Auth).filter(Auth.email == email).first()
+
+        if auth:
+            user_id = auth.authid
+            file_path = os.path.join('authlog', f"{user_id}.txt")
+
+            if not os.path.exists(file_path):
+                return jsonify({'error': 'Device not found'}), 404
+
+            with open(file_path, 'r') as f:
+                lines = f.readlines()
+
+            device_exists = False
+            cutoff_date = datetime.now() - timedelta(days=30)
+
+            for line in lines:
+                if line.startswith('AndroidID: '):
+                    existing_android_id = line.split('AndroidID: ')[1].strip()
+                    if existing_android_id == android_id:
+                        date_line = lines[lines.index(line) + 1]
+                        last_login_date = datetime.fromisoformat(date_line.split('Date: ')[1].strip())
+                        if last_login_date > cutoff_date:
+                            device_exists = True
+                            break
+
+            if device_exists:
+                return jsonify({'message': 'Device authorized'}), 200
+            else:
+                return jsonify({'error': 'Device not authorized or outdated'}), 404
+        else:
+            return jsonify({'error': 'User not found'}), 404
+
 
 if __name__ == '__main__':
     app.run(debug=True, host='192.168.1.14', port=8082)
